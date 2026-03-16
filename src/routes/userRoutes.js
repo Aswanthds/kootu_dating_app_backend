@@ -8,4 +8,9 @@ router.get('/me', authMiddleware, userController.getMe);
 router.put('/update', authMiddleware, userController.updateProfile);
 router.get('/feed', authMiddleware, userController.getFeed);
 
+// Interests
+router.get('/interests', userController.getAllInterests);
+router.post('/interests', authMiddleware, userController.updateUserInterests);
+
+
 module.exports = router;

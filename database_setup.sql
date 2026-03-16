@@ -1,5 +1,5 @@
 -- DATING APP DATABASE SCHEMA (MySQL)
--- Run this in your MySQL Workbench or Terminal to set up your tables manually.
+-- Use this to set up your tables manually.
 
 CREATE TABLE IF NOT EXISTS users (
     id VARCHAR(36) PRIMARY KEY,
@@ -9,8 +9,9 @@ CREATE TABLE IF NOT EXISTS users (
     gender VARCHAR(50),
     bio TEXT,
     status VARCHAR(50) DEFAULT 'active',
-    last_active DATETIME DEFAULT CURRENT_TIMESTAMP,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    last_active DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
+    created_at DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3)
 );
 
 CREATE TABLE IF NOT EXISTS user_photos (
@@ -19,6 +20,7 @@ CREATE TABLE IF NOT EXISTS user_photos (
     photo_url TEXT NOT NULL,
     is_profile_pic BOOLEAN DEFAULT FALSE,
     sort_order INT DEFAULT 0,
+    created_at DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
@@ -26,7 +28,7 @@ CREATE TABLE IF NOT EXISTS picks (
     id INT AUTO_INCREMENT PRIMARY KEY,
     follower_id VARCHAR(36) NOT NULL,
     following_id VARCHAR(36) NOT NULL,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    created_at DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
     FOREIGN KEY (follower_id) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (following_id) REFERENCES users(id) ON DELETE CASCADE
 );
@@ -34,7 +36,8 @@ CREATE TABLE IF NOT EXISTS picks (
 CREATE TABLE IF NOT EXISTS chat_rooms (
     id VARCHAR(36) PRIMARY KEY,
     last_message TEXT,
-    last_message_time DATETIME DEFAULT CURRENT_TIMESTAMP
+    last_message_time DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
+    created_at DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3)
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -42,7 +45,7 @@ CREATE TABLE IF NOT EXISTS messages (
     chat_room_id VARCHAR(36) NOT NULL,
     sender_id VARCHAR(36) NOT NULL,
     content TEXT NOT NULL,
-    sent_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+    sent_time DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
     FOREIGN KEY (chat_room_id) REFERENCES chat_rooms(id) ON DELETE CASCADE,
     FOREIGN KEY (sender_id) REFERENCES users(id) ON DELETE CASCADE
 );
