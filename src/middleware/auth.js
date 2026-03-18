@@ -1,34 +1,34 @@
-const jwt = require('jsonwebtoken');
+const { admin } = require('../services/firebase');
 
 /**
- * JWT Authentication Middleware
- * This checks the "Authorization" header for a valid token.
+ * Firebase Auth Middleware
+ * Verifies the Firebase ID Token sent in "Authorization: Bearer <token>"
+ * The mobile app gets this token from: FirebaseAuth.instance.currentUser.getIdToken()
  */
-const authMiddleware = (req, res, next) => {
-    // Get token from header: "Bearer <token>"
-    const authHeader = req.header('Authorization');
-    const token = authHeader && authHeader.split(' ')[1];
+const authMiddleware = async (req, res, next) => {
+  const authHeader = req.header('Authorization');
+  const token = authHeader && authHeader.split(' ')[1];
 
-    if (!token) {
-        return res.status(401).json({
-            success: false,
-            message: "Access Denied: No token provided"
-        });
-    }
+  if (!token) {
+    return res.status(401).json({ success: false, message: 'Access Denied: No token provided' });
+  }
 
-    try {
-        // Verify the token using our secret key
-        const decoded = jwt.verify(token, process.env.JWT_SECRET || 'secret');
+  try {
+    // Verify token with Firebase Admin SDK - no JWT secret needed!
+    const decodedToken = await admin.auth().verifyIdToken(token);
 
-        // Add the user ID to the request object so controllers can use it
-        req.user = decoded;
-        next();
-    } catch (err) {
-        res.status(401).json({
-            success: false,
-            message: "Unauthorized: Invalid or expired token"
-        });
-    }
+    // Expose req.user.id across all controllers (mapped from Firebase uid)
+    req.user = {
+      id: decodedToken.uid,
+      email: decodedToken.email,
+      name: decodedToken.name
+    };
+
+    next();
+  } catch (err) {
+    console.error('Firebase Auth Error:', err.message);
+    return res.status(401).json({ success: false, message: 'Unauthorized: Invalid or expired Firebase token' });
+  }
 };
 
 module.exports = authMiddleware;

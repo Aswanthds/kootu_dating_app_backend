@@ -1,13 +1,12 @@
-const pool = require('../services/db');
+const { admin, db } = require('../services/firebase');
 
 /**
  * GET ALL QUESTIONS
- * Goal: Return the list of predefined questions from the DB.
  */
 exports.getQuestions = async (req, res, next) => {
   try {
-    // ??? WHAT IS THE SQL TO GET ALL QUESTIONS ???
-    const [questions] = await pool.query('SELECT * FROM profile_questions'); 
+    const snap = await db.collection('profile_questions').orderBy('order', 'asc').get();
+    const questions = snap.docs.map(d => ({ id: d.id, ...d.data() }));
     res.json(questions);
   } catch (error) {
     next(error);
@@ -16,22 +15,12 @@ exports.getQuestions = async (req, res, next) => {
 
 /**
  * GET MY ANSWERS
- * Goal: Return the answers the LOGGED-IN user has already saved.
  */
 exports.getMyAnswers = async (req, res, next) => {
   try {
     const userId = req.user.id;
-
-    // ??? WHAT IS THE SQL TO GET ANSWERS + QUESTION TEXT ???
-    // Hint: You need to JOIN 'user_answers' with 'profile_questions'
-    const sql = `
-        SELECT ua.answer_text, pq.question_text 
-        FROM user_answers ua
-        JOIN profile_questions pq ON ua.question_id = pq.id
-        WHERE ua.user_id = ?
-    `;
-
-    const [answers] = await pool.query(sql, [userId]);
+    const snap = await db.collection('user_answers').where('user_id', '==', userId).get();
+    const answers = snap.docs.map(d => ({ id: d.id, ...d.data() }));
     res.json(answers);
   } catch (error) {
     next(error);
@@ -40,25 +29,23 @@ exports.getMyAnswers = async (req, res, next) => {
 
 /**
  * SAVE / UPDATE ANSWER
- * Goal: Insert a new answer or update an old one using ON DUPLICATE KEY UPDATE.
+ * Uses the deterministic document ID (userId_questionId) as the upsert key.
  */
 exports.saveAnswer = async (req, res, next) => {
   try {
     const { questionId, answerText } = req.body;
-    const userId = req.user.id; // Security: Always take ID from the Token!
+    const userId = req.user.id;
 
-    const sql = `
-      INSERT INTO user_answers (user_id, question_id, answer_text)
-      VALUES (?, ?, ?)
-      ON DUPLICATE KEY UPDATE answer_text = ?
-    `;
+    // set() with { merge: true } = Firestore's equivalent of UPSERT
+    await db.collection('user_answers').doc(`${userId}_${questionId}`).set({
+      user_id: userId,
+      question_id: questionId,
+      answer_text: answerText,
+      updated_at: admin.firestore.FieldValue.serverTimestamp()
+    }, { merge: true });
 
-    // We pass answer_text twice: once for the potential INSERT, once for the UPDATE.
-    await pool.query(sql, [userId, questionId, answerText, answerText]);
-
-    res.json({ success: true, message: "Answer saved!" });
+    res.json({ success: true, message: 'Answer saved!' });
   } catch (error) {
     next(error);
   }
 };
-

@@ -1,100 +1,113 @@
-const pool = require('../services/db');
-const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
-const crypto = require('crypto');
-const { OAuth2Client } = require('google-auth-library');
-
-const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+const { admin, db } = require('../services/firebase');
 
 /**
- * EMAIL REGISTER
+ * REGISTER (Create user in Firebase Auth + Firestore)
  */
 exports.register = async (req, res, next) => {
   try {
     const { email, password, name } = req.body;
 
-    // 1. Check if user already exists
-    // [SQL]: SELECT * FROM users WHERE email = ?
-    const [existingUsers] = await pool.query('SELECT id FROM users WHERE email = ?', [email]);
-    if (existingUsers.length > 0) {
-      return res.status(400).json({ error: "User already exists" });
-    }
+    // 1. Create the user in Firebase Auth
+    const userRecord = await admin.auth().createUser({
+      email,
+      password,
+      displayName: name
+    });
 
-    // 2. Hash the password
-    const salt = await bcrypt.genSalt(10);
-    const hashedPassword = await bcrypt.hash(password, salt);
+    // 2. Create a user profile document in Firestore
+    await db.collection('users').doc(userRecord.uid).set({
+      id: userRecord.uid,
+      email,
+      name,
+      bio: null,
+      gender: null,
+      latitude: null,
+      longitude: null,
+      isPremium: false,
+      status: 'active',
+      isIncognito: false,
+      createdAt: admin.firestore.FieldValue.serverTimestamp()
+    });
 
-    // 3. Insert new user
-    // [SQL]: INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, ?, ?)
-    const userId = crypto.randomUUID();
-    await pool.query(
-      'INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, ?, ?)',
-      [userId, email, name, hashedPassword]
-    );
-
-    const token = jwt.sign({ id: userId }, process.env.JWT_SECRET || 'secret', { expiresIn: '30d' });
-    res.status(201).json({ message: "Registered", token, userId });
+    // 3. Create a custom token for the client to sign in with
+    const customToken = await admin.auth().createCustomToken(userRecord.uid);
+    res.status(201).json({ message: 'Registered successfully', customToken, userId: userRecord.uid });
 
   } catch (error) {
+    if (error.code === 'auth/email-already-exists') {
+      return res.status(400).json({ error: 'User with this email already exists' });
+    }
     next(error);
   }
 };
 
 /**
- * EMAIL LOGIN
+ * LOGIN
+ * NOTE: In a Firebase setup, login is typically handled entirely on the client (mobile app)
+ * using FirebaseAuth.signInWithEmailAndPassword(). The client gets the ID token and sends
+ * it with every request. This endpoint is a server-side fallback.
  */
 exports.login = async (req, res, next) => {
   try {
-    const { email, password } = req.body;
+    const { email } = req.body;
 
-    // 1. Find user by email
-    const [users] = await pool.query('SELECT * FROM users WHERE email = ?', [email]);
-    const user = users[0];
+    // Look up user by email in Firebase Auth
+    const userRecord = await admin.auth().getUserByEmail(email);
 
-    if (!user) return res.status(401).json({ error: "Invalid credentials" });
+    // Generate a custom token for the client to exchange for an ID token
+    const customToken = await admin.auth().createCustomToken(userRecord.uid);
 
-    // 2. Compare password
-    const isMatch = await bcrypt.compare(password, user.password_hash);
-    if (!isMatch) return res.status(401).json({ error: "Invalid credentials" });
+    // Also fetch profile from Firestore
+    const userDoc = await db.collection('users').doc(userRecord.uid).get();
+    const userProfile = userDoc.exists ? userDoc.data() : {};
 
-    const token = jwt.sign({ id: user.id }, process.env.JWT_SECRET || 'secret', { expiresIn: '30d' });
-    res.json({ token, user: { id: user.id, name: user.name, email: user.email } });
+    res.json({
+      message: 'Login successful',
+      customToken,
+      user: { id: userRecord.uid, email: userRecord.email, ...userProfile }
+    });
 
   } catch (error) {
+    if (error.code === 'auth/user-not-found') {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
     next(error);
   }
 };
 
 /**
  * GOOGLE AUTH
+ * The client already handles Google sign-in via Firebase Auth SDK.
+ * This endpoint exists to ensure a Firestore profile is created after first sign-in.
  */
 exports.googleAuth = async (req, res, next) => {
   try {
-    const { idToken } = req.body;
-    const ticket = await googleClient.verifyIdToken({
-      idToken,
-      audience: process.env.GOOGLE_CLIENT_ID,
-    });
-    const { email, name } = ticket.getPayload();
+    // req.user is set by authMiddleware (already verified Firebase token)
+    const { id: uid, email, name } = req.user;
 
-    // 1. Check if they exist
-    const [users] = await pool.query('SELECT * FROM users WHERE email = ?', [email]);
-    let user = users[0];
+    const userRef = db.collection('users').doc(uid);
+    const userDoc = await userRef.get();
 
-    if (!user) {
-      // 2. If not, Create them
-      const userId = crypto.randomUUID();
-      await pool.query(
-        'INSERT INTO users (id, email, name, password_hash, status) VALUES (?, ?, ?, ?, ?)',
-        [userId, email, name, 'GOOGLE_USER', 'active']
-      );
-      user = { id: userId, email, name };
+    if (!userDoc.exists) {
+      // First time Google login: create a profile doc
+      await userRef.set({
+        id: uid,
+        email,
+        name: name || 'New User',
+        bio: null,
+        gender: null,
+        latitude: null,
+        longitude: null,
+        isPremium: false,
+        status: 'active',
+        isIncognito: false,
+        createdAt: admin.firestore.FieldValue.serverTimestamp()
+      });
     }
 
-    const token = jwt.sign({ id: user.id }, process.env.JWT_SECRET || 'secret', { expiresIn: '30d' });
-    res.json({ token, user });
+    res.json({ message: 'Google auth profile verified', user: { id: uid, email, name } });
 
   } catch (error) {
-    res.status(401).json({ error: "Google verification failed" });
+    next(error);
   }
 };

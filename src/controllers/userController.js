@@ -1,26 +1,25 @@
-const pool = require('../services/db');
+const { admin, db } = require('../services/firebase');
 
 /**
  * GET ME
+ * Fetches the logged-in user's profile and their sub-collections from Firestore.
  */
 exports.getMe = async (req, res, next) => {
   try {
-    // [SQL]: Get user info and their photos
-    const [users] = await pool.query('SELECT id, email, name, bio, gender,latitude,longitude, status FROM users WHERE id = ?', [req.user.id]);
-    const user = users[0];
+    const userId = req.user.id;
 
-    if (!user) return res.status(404).json({ error: "User not found" });
+    const userDoc = await db.collection('users').doc(userId).get();
+    if (!userDoc.exists) return res.status(404).json({ error: 'User not found' });
 
-    // Get photos
-    const [photos] = await pool.query('SELECT * FROM user_photos WHERE user_id = ? ORDER BY sort_order ASC', [req.user.id]);
-    user.photos = photos;
+    const user = { id: userDoc.id, ...userDoc.data() };
 
-    // Get interests
-    const [interests] = await pool.query(
-      'SELECT i.id, i.name FROM interests i JOIN user_interests ui ON i.id = ui.interest_id WHERE ui.user_id = ?',
-      [req.user.id]
-    );
-    user.interests = interests;
+    // Get photos (from sub-collection)
+    const photosSnap = await db.collection('users').doc(userId).collection('photos').orderBy('sortOrder', 'asc').get();
+    user.photos = photosSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+
+    // Get interests (from sub-collection)
+    const interestsSnap = await db.collection('users').doc(userId).collection('interests').get();
+    user.interests = interestsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
 
     res.json(user);
   } catch (error) {
@@ -31,97 +30,79 @@ exports.getMe = async (req, res, next) => {
 /**
  * UPDATE PROFILE
  */
-
-
 exports.updateProfile = async (req, res, next) => {
   try {
     const { name, bio, gender, latitude, longitude } = req.body;
     const userId = req.user.id;
 
-    // 1. UPDATE: We add the new fields to the query
-    await pool.query(
-      'UPDATE users SET name = ?, bio = ?, gender = ?, latitude = ?, longitude = ? WHERE id = ?',
-      [name, bio, gender, latitude, longitude, userId]
-    );
+    const updateData = {};
+    if (name !== undefined) updateData.name = name;
+    if (bio !== undefined) updateData.bio = bio;
+    if (gender !== undefined) updateData.gender = gender;
+    if (latitude !== undefined) updateData.latitude = latitude;
+    if (longitude !== undefined) updateData.longitude = longitude;
+    updateData.updatedAt = admin.firestore.FieldValue.serverTimestamp();
 
-    // 2. RE-FETCH: Get the full updated profile to send back to the app
-    const [users] = await pool.query(
-      'SELECT id, email, name, bio, gender, latitude, longitude, status FROM users WHERE id = ?',
-      [userId]
-    );
-    const user = users[0];
+    await db.collection('users').doc(userId).update(updateData);
 
-    // 3. ATTACH EXTRAS: Get photos and interests as well
-    const [photos] = await pool.query('SELECT * FROM user_photos WHERE user_id = ? ORDER BY sort_order ASC', [userId]);
-    user.photos = photos;
-
-    const [interests] = await pool.query(
-      'SELECT i.id, i.name FROM interests i JOIN user_interests ui ON i.id = ui.interest_id WHERE ui.user_id = ?',
-      [userId]
-    );
-    user.interests = interests;
-
-    // 4. RETURN: The app now has the latest data immediately
-    res.json({
-      success: true,
-      message: "Profile updated successfully",
-      data: user
-    });
+    const updatedDoc = await db.collection('users').doc(userId).get();
+    res.json({ success: true, message: 'Profile updated successfully', data: { id: updatedDoc.id, ...updatedDoc.data() } });
 
   } catch (error) {
     next(error);
   }
 };
 
-
 /**
- * FEED (Smarter Discovery with Distance/Proximity)
+ * FEED (Proximity-based Discovery using Firestore)
+ * NOTE: Firestore doesn't support HAVERSINE math natively.
+ * We fetch nearby users from Firestore using geo-bounds and filter in memory.
  */
 exports.getFeed = async (req, res, next) => {
   try {
-    const currentUserId = req.user.id;
+    const userId = req.user.id;
 
-    // 1. Get the current user's coordinates first
-    const [me] = await pool.query('SELECT latitude, longitude FROM users WHERE id = ?', [currentUserId]);
-    const { latitude: myLat, longitude: myLon } = me[0];
+    const myDoc = await db.collection('users').doc(userId).get();
+    const { latitude: myLat, longitude: myLon } = myDoc.data();
 
-    // If the user hasn't shared their location, we show random users
     if (!myLat || !myLon) {
-      const [users] = await pool.query('SELECT id, name, bio FROM users WHERE id != ? LIMIT 30', [currentUserId]);
-      return res.json({ message: "Share your location for better matches!", users });
+      // No location set: return a random sample
+      const snap = await db.collection('users').where('status', '==', 'active').limit(30).get();
+      const users = snap.docs.filter(d => d.id !== userId).map(d => ({ id: d.id, ...d.data() }));
+      return res.json({ message: 'Share your location for better matches!', users });
     }
 
-    // 2. The Big Matchmaking Query (Now with Profile Filtering!)
-    const sql = `
-      SELECT 
-        u.id, u.name, u.bio,
-        COUNT(target_ui.interest_id) as shared_interest_count,
-        -- HAVERSINE FORMULA (Calculates distance in Miles)
-        (3959 * acos(cos(radians(?)) * cos(radians(u.latitude)) * cos(radians(u.longitude) - radians(?)) + sin(radians(?)) * sin(radians(u.latitude)))) AS distance
-      FROM users u
-      LEFT JOIN user_interests target_ui ON u.id = target_ui.user_id
-        AND target_ui.interest_id IN (
-          SELECT interest_id FROM user_interests WHERE user_id = ?
-        )
-      WHERE u.id != ? 
-        AND u.status = 'active'
-        AND u.is_incognito = 0
-        AND u.latitude IS NOT NULL 
-        -- 🔥 NEW: EXCLUSION LOGIC 🔥
-        -- "Only show people I HAVEN'T already liked/swiped"
-        AND u.id NOT IN (
-          SELECT following_id FROM picks WHERE follower_id = ?
-        )
-      GROUP BY u.id
-      HAVING distance < 50 
-      ORDER BY distance ASC, shared_interest_count DESC
-      LIMIT 30
-    `;
+    // Fetch who I've already swiped on to exclude them
+    const swipedSnap = await db.collection('picks').where('follower_id', '==', userId).get();
+    const swipedIds = new Set(swipedSnap.docs.map(d => d.data().following_id));
+    swipedIds.add(userId); // also exclude myself
 
-    // We pass our latitude and longitude into the query placeholders
-    // Now we also pass currentUserId one extra time for the NOT IN clause
-    const [users] = await pool.query(sql, [myLat, myLon, myLat, currentUserId, currentUserId, currentUserId]);
+    // Simple lat/lon bounding box (~50 miles)
+    const DELTA = 0.72; // ~50 miles in degrees
+    const snap = await db.collection('users')
+      .where('status', '==', 'active')
+      .where('isIncognito', '==', false)
+      .where('latitude', '>=', myLat - DELTA)
+      .where('latitude', '<=', myLat + DELTA)
+      .limit(80)
+      .get();
 
+    // Haversine distance filter in memory
+    const toRad = (deg) => deg * (Math.PI / 180);
+    const haversine = (lat1, lon1, lat2, lon2) => {
+      const R = 3959; // Miles
+      const dLat = toRad(lat2 - lat1);
+      const dLon = toRad(lon2 - lon1);
+      const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+      return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    };
+
+    const users = snap.docs
+      .filter(d => !swipedIds.has(d.id))
+      .map(d => ({ id: d.id, distance: haversine(myLat, myLon, d.data().latitude, d.data().longitude), ...d.data() }))
+      .filter(u => u.distance < 50)
+      .sort((a, b) => a.distance - b.distance)
+      .slice(0, 30);
 
     res.json(users);
   } catch (error) {
@@ -129,13 +110,13 @@ exports.getFeed = async (req, res, next) => {
   }
 };
 
-
 /**
- * GET ALL AVAILABLE INTERESTS
+ * GET ALL INTERESTS
  */
 exports.getAllInterests = async (req, res, next) => {
   try {
-    const [interests] = await pool.query('SELECT * FROM interests ORDER BY id ASC');
+    const snap = await db.collection('interests').orderBy('name', 'asc').get();
+    const interests = snap.docs.map(d => ({ id: d.id, ...d.data() }));
     res.json(interests);
   } catch (error) {
     next(error);
@@ -147,22 +128,44 @@ exports.getAllInterests = async (req, res, next) => {
  */
 exports.updateUserInterests = async (req, res, next) => {
   try {
-    const { interestIds } = req.body; // Expecting an array of numbers like [1, 3, 5]
+    const { interestIds } = req.body;
     const userId = req.user.id;
+    const interestsRef = db.collection('users').doc(userId).collection('interests');
 
-    // 1. Remove old interests
-    await pool.query('DELETE FROM user_interests WHERE user_id = ?', [userId]);
+    // 1. Delete old interests
+    const oldSnap = await interestsRef.get();
+    const batch = db.batch();
+    oldSnap.docs.forEach(d => batch.delete(d.ref));
 
-    // 2. Add new ones (if any)
+    // 2. Add new interests
     if (interestIds && interestIds.length > 0) {
-      // Bulding a bulk insert: INSERT INTO user_interests (user_id, interest_id) VALUES (?,?), (?,?) ...
-      const values = interestIds.map(id => [userId, id]);
-      await pool.query('INSERT INTO user_interests (user_id, interest_id) VALUES ?', [values]);
+      for (const id of interestIds) {
+        batch.set(interestsRef.doc(String(id)), { interest_id: id });
+      }
     }
 
-    res.json({ message: "Interests updated successfully" });
+    await batch.commit();
+    res.json({ message: 'Interests updated successfully' });
   } catch (error) {
     next(error);
   }
 };
 
+/**
+ * DELETE ACCOUNT
+ */
+exports.deleteAccount = async (req, res, next) => {
+  try {
+    const userId = req.user.id;
+
+    // Delete Firestore document and sub-collections (photos, interests)
+    await db.recursiveDelete(db.collection('users').doc(userId));
+
+    // Delete from Firebase Auth
+    await admin.auth().deleteUser(userId);
+
+    res.json({ success: true, message: 'Account and all associated data permanently deleted.' });
+  } catch (error) {
+    next(error);
+  }
+};

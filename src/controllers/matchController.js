@@ -1,93 +1,70 @@
-const pool = require('../services/db');
+const { admin, db } = require('../services/firebase');
 const crypto = require('crypto');
 
 /**
- * PICK / SWIPE (Support Like and Skip)
+ * PICK / SWIPE
  */
 exports.pickUser = async (req, res, next) => {
   try {
-    const { followingId, type } = req.body; // type can be 'like' or 'skip'
+    const { followingId, type } = req.body; // type: 'like' | 'skip'
     const followerId = req.user.id;
 
-    // 1. Save the pick with the specific type
-    await pool.query(
-      'INSERT INTO picks (follower_id, following_id, type) VALUES (?, ?, ?)',
-      [followerId, followingId, type || 'like']
-    );
+    // 1. Save the pick using a deterministic document ID 
+    await db.collection('picks').doc(`${followerId}_${followingId}`).set({
+      follower_id: followerId,
+      following_id: followingId,
+      type: type || 'like',
+      created_at: admin.firestore.FieldValue.serverTimestamp()
+    });
 
-    // 2. CHECK FOR MATCH (Only if it's a "Like")
+    // 2. Check for a mutual match only on 'like'
     if (type === 'like' || !type) {
-      // Find if there is a 'like' from the other person back to me
-      const [matches] = await pool.query(
-        'SELECT id FROM picks WHERE follower_id = ? AND following_id = ? AND type = "like"  ',
-        [followingId, followerId]
-      );
+      const reciprocal = await db.collection('picks').doc(`${followingId}_${followerId}`).get();
 
-      if (matches.length > 0) {
-        // It's a match! Create a chat room
+      if (reciprocal.exists && reciprocal.data().type === 'like') {
+        // It's a match! Create a chat room.
         const roomId = crypto.randomUUID();
-        await pool.query(
-          'INSERT INTO chat_rooms (id,user1_id, user2_id, last_message) VALUES (?, ?, ?, ?)',
-          [roomId, followerId, followingId, 'You matched!']
-        );
+
+        // Canonical ordering: smaller uid is always user1 (prevents duplicate rooms)
+        const user1_id = followerId < followingId ? followerId : followingId;
+        const user2_id = followerId < followingId ? followingId : followerId;
+
+        await db.collection('chat_rooms').doc(roomId).set({
+          id: roomId,
+          user1_id,
+          user2_id,
+          last_message: "You matched!",
+          last_message_time: admin.firestore.FieldValue.serverTimestamp(),
+          created_at: admin.firestore.FieldValue.serverTimestamp()
+        });
 
         return res.json({ message: "It's a Match!", isMatch: true, chatRoomId: roomId });
       }
     }
 
-    res.json({ message: type === 'skip' ? "Skipped" : "Liked", isMatch: false });
+    res.json({ message: type === 'skip' ? 'Skipped' : 'Liked', isMatch: false });
   } catch (error) {
     next(error);
   }
 };
 
 /**
- * MY PICKS
+ * GET MY PICKS (people I liked)
  */
 exports.getMyPicks = async (req, res, next) => {
   try {
-    // [SQL]: Join picks with users to see who I liked
-    const [picks] = await pool.query(
-      `SELECT u.name, u.email, p.created_at 
-       FROM picks p 
-       JOIN users u ON p.following_id = u.id 
-       WHERE p.follower_id = ?`,
-      [req.user.id]
-    );
-    res.json(picks);
-  } catch (error) {
-    next(error);
-  }
-};
-exports.getMatches = async (req, res, next) => {
-  try {
-    // [SQL]: Join picks with users to see who I liked
-    const [picks] = await pool.query(
-      `SELECT
-    u.name,
-    cr.id as chat_room_id,
-    u.id as userId,
-    up.photo_url
-FROM picks p1
--- Join to another row in Picks where the IDs are flipped (Reciprocal like)
-JOIN picks p2 ON p1.follower_id = p2.following_id
-              AND p1.following_id = p2.follower_id
--- Join to Users to get the details of the other person (p1.following_id)
-JOIN users u ON p1.following_id = u.id
--- Join to chat_rooms to get the chat room id
-JOIN chat_rooms cr ON
-   (cr.user1_id = p1.follower_id AND cr.user2_id = p1.following_id)
-   OR
-   (cr.user1_id = p1.following_id AND cr.user2_id = p1.follower_id)
--- Join to Photos to get their profile picture
-LEFT JOIN user_photos up ON u.id = up.user_id AND up.is_profile_pic = 1
-WHERE p1.follower_id = ? -- Only for ME
-  AND p1.type = 'like'
-  AND p2.type = 'like';
+    const snap = await db.collection('picks')
+      .where('follower_id', '==', req.user.id)
+      .where('type', '==', 'like')
+      .get();
 
-`,
-      [req.user.id]
-    );
+    const picks = [];
+    for (const doc of snap.docs) {
+      const userDoc = await db.collection('users').doc(doc.data().following_id).get();
+      if (userDoc.exists) {
+        picks.push({ userId: userDoc.id, name: userDoc.data().name, email: userDoc.data().email, created_at: doc.data().created_at });
+      }
+    }
     res.json(picks);
   } catch (error) {
     next(error);
@@ -95,20 +72,70 @@ WHERE p1.follower_id = ? -- Only for ME
 };
 
 /**
- * LIST PEOPLE WHO PICKED ME
+ * GET MATCHES (mutual likes + chat room ID)
  */
-exports.getWhoPickedMe = async (req, res, next) => {
+exports.getMatches = async (req, res, next) => {
   try {
-    const [picks] = await pool.query(
-      `SELECT u.name, u.email, p.created_at 
-       FROM picks p 
-       JOIN users u ON p.follower_id = u.id 
-       WHERE p.following_id = ?`,
-      [req.user.id]
-    );
-    res.json(picks);
+    const userId = req.user.id;
+
+    // Find all chat rooms where I am user1 or user2 (I'm in a match)
+    const [rooms1, rooms2] = await Promise.all([
+      db.collection('chat_rooms').where('user1_id', '==', userId).get(),
+      db.collection('chat_rooms').where('user2_id', '==', userId).get()
+    ]);
+
+    const allRooms = [...rooms1.docs, ...rooms2.docs];
+    const matches = [];
+
+    for (const roomDoc of allRooms) {
+      const room = roomDoc.data();
+      const otherUserId = room.user1_id === userId ? room.user2_id : room.user1_id;
+
+      const userDoc = await db.collection('users').doc(otherUserId).get();
+      if (userDoc.exists) {
+        const u = userDoc.data();
+        // Get profile photo
+        const photoSnap = await db.collection('users').doc(otherUserId)
+          .collection('photos')
+          .where('isProfilePic', '==', true)
+          .limit(1)
+          .get();
+        const photo_url = photoSnap.empty ? null : photoSnap.docs[0].data().photoUrl;
+
+        matches.push({
+          userId: otherUserId,
+          name: u.name,
+          photo_url,
+          chat_room_id: room.id,
+          last_message: room.last_message
+        });
+      }
+    }
+    res.json(matches);
   } catch (error) {
     next(error);
   }
 };
 
+/**
+ * WHO PICKED ME (people who liked me)
+ */
+exports.getWhoPickedMe = async (req, res, next) => {
+  try {
+    const snap = await db.collection('picks')
+      .where('following_id', '==', req.user.id)
+      .where('type', '==', 'like')
+      .get();
+
+    const picks = [];
+    for (const doc of snap.docs) {
+      const userDoc = await db.collection('users').doc(doc.data().follower_id).get();
+      if (userDoc.exists) {
+        picks.push({ userId: userDoc.id, name: userDoc.data().name, email: userDoc.data().email, created_at: doc.data().created_at });
+      }
+    }
+    res.json(picks);
+  } catch (error) {
+    next(error);
+  }
+};
