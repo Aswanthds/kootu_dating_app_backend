@@ -91,8 +91,7 @@ exports.getFeed = async (req, res, next) => {
       return res.json({ message: "Share your location for better matches!", users });
     }
 
-    // 2. The Big Matchmaking Query
-    // We calculate "distance" and "shared_interest_count" together!
+    // 2. The Big Matchmaking Query (Now with Profile Filtering!)
     const sql = `
       SELECT 
         u.id, u.name, u.bio,
@@ -101,21 +100,28 @@ exports.getFeed = async (req, res, next) => {
         (3959 * acos(cos(radians(?)) * cos(radians(u.latitude)) * cos(radians(u.longitude) - radians(?)) + sin(radians(?)) * sin(radians(u.latitude)))) AS distance
       FROM users u
       LEFT JOIN user_interests target_ui ON u.id = target_ui.user_id
-      AND target_ui.interest_id IN (
-        SELECT interest_id FROM user_interests WHERE user_id = ?
-      )
+        AND target_ui.interest_id IN (
+          SELECT interest_id FROM user_interests WHERE user_id = ?
+        )
       WHERE u.id != ? 
         AND u.status = 'active'
         AND u.is_incognito = 0
-        AND u.latitude IS NOT NULL -- Only show people with location
+        AND u.latitude IS NOT NULL 
+        -- 🔥 NEW: EXCLUSION LOGIC 🔥
+        -- "Only show people I HAVEN'T already liked/swiped"
+        AND u.id NOT IN (
+          SELECT following_id FROM picks WHERE follower_id = ?
+        )
       GROUP BY u.id
-      HAVING distance < 50 -- Only show people within 50 miles
+      HAVING distance < 50 
       ORDER BY distance ASC, shared_interest_count DESC
       LIMIT 30
     `;
 
     // We pass our latitude and longitude into the query placeholders
-    const [users] = await pool.query(sql, [myLat, myLon, myLat, currentUserId, currentUserId]);
+    // Now we also pass currentUserId one extra time for the NOT IN clause
+    const [users] = await pool.query(sql, [myLat, myLon, myLat, currentUserId, currentUserId, currentUserId]);
+
 
     res.json(users);
   } catch (error) {

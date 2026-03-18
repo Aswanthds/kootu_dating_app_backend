@@ -26,6 +26,10 @@ app.get('/', (req, res) => {
 app.use('/api/auth', require('./routes/authRoutes'));
 app.use('/api/users', require('./routes/userRoutes'));
 app.use('/api/matches', require('./routes/matchRoutes'));
+app.use('/api/prompts', require('./routes/promptRoutes'));
+app.use('/api/chat', require('./routes/chatRoutes'));
+app.use('/api/subscription', require('./routes/paymentRoutes'));
+
 
 // 4. ERROR HANDLING
 app.use((err, req, res, next) => {

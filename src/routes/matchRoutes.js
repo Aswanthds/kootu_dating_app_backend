@@ -8,5 +8,6 @@ const authMiddleware = require('../middleware/auth');
 router.post('/pick', authMiddleware, matchController.pickUser);
 router.get('/my-picks', authMiddleware, matchController.getMyPicks);
 router.get('/who-picked-me', authMiddleware, matchController.getWhoPickedMe);
+router.get('/matches', authMiddleware, matchController.getMatches);
 
 module.exports = router;
