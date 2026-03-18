@@ -1,16 +1,16 @@
-const pool = require("../services/db");
+const pool = require('../services/pg_db');
 
 
 exports.verifyPurchase = async (req, res, next) => {
     try {
         const { purchaseToken, productId } = req.body;
         const userId = req.user.id;
-        const [result] = await pool.query(
-            "INSERT INTO subscriptions (user_id, purchase_token,plan_id,expiry_date) VALUES (?,?,?,?)",
+        const { rows: result } = await pool.query(
+            "INSERT INTO subscriptions (user_id, purchase_token,plan_id,expiry_date) VALUES ($1,$2,$3,$4)",
             [userId, purchaseToken, productId, new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)]
         );
 
-        await pool.query('UPDATE users SET is_premium = 1 WHERE id = ?', [userId])
+        await pool.query('UPDATE users SET is_premium = 1 WHERE id = $1', [userId])
         res.json({
             success: true,
             data: result,

@@ -1,4 +1,4 @@
-const pool = require('../services/db');
+const pool = require('../services/pg_db');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
@@ -15,7 +15,7 @@ exports.register = async (req, res, next) => {
 
     // 1. Check if user already exists
     // [SQL]: SELECT * FROM users WHERE email = ?
-    const [existingUsers] = await pool.query('SELECT id FROM users WHERE email = ?', [email]);
+    const { rows: existingUsers } = await pool.query('SELECT id FROM users WHERE email = $1', [email]);
     if (existingUsers.length > 0) {
       return res.status(400).json({ error: "User already exists" });
     }
@@ -28,7 +28,7 @@ exports.register = async (req, res, next) => {
     // [SQL]: INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, ?, ?)
     const userId = crypto.randomUUID();
     await pool.query(
-      'INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, ?, ?)',
+      'INSERT INTO users (id, email, name, password_hash) VALUES ($1, $2, $3, $4)',
       [userId, email, name, hashedPassword]
     );
 
@@ -48,7 +48,7 @@ exports.login = async (req, res, next) => {
     const { email, password } = req.body;
 
     // 1. Find user by email
-    const [users] = await pool.query('SELECT * FROM users WHERE email = ?', [email]);
+    const { rows: users } = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
     const user = users[0];
 
     if (!user) return res.status(401).json({ error: "Invalid credentials" });
@@ -78,14 +78,14 @@ exports.googleAuth = async (req, res, next) => {
     const { email, name } = ticket.getPayload();
 
     // 1. Check if they exist
-    const [users] = await pool.query('SELECT * FROM users WHERE email = ?', [email]);
+    const { rows: users } = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
     let user = users[0];
 
     if (!user) {
       // 2. If not, Create them
       const userId = crypto.randomUUID();
       await pool.query(
-        'INSERT INTO users (id, email, name, password_hash, status) VALUES (?, ?, ?, ?, ?)',
+        'INSERT INTO users (id, email, name, password_hash, status) VALUES ($1, $2, $3, $4, $5)',
         [userId, email, name, 'GOOGLE_USER', 'active']
       );
       user = { id: userId, email, name };

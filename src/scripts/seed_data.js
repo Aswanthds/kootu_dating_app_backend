@@ -1,4 +1,4 @@
-const pool = require('../services/db');
+const pool = require('../services/pg_db');
 const crypto = require('crypto');
 
 async function seed() {
@@ -45,7 +45,7 @@ async function seed() {
 
       // Insert User
       await pool.query(
-        'INSERT INTO users (id, email, name, password_hash, gender, bio, latitude, longitude, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        'INSERT INTO users (id, email, name, password_hash, gender, bio, latitude, longitude, status) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)',
         [id, email, users[i].name, 'DUMMY_PWD', users[i].gender, users[i].bio, lat, lon, 'active']
       );
 
@@ -56,7 +56,7 @@ async function seed() {
 
       for (const interestId of selectedInterests) {
         await pool.query(
-          'INSERT IGNORE INTO user_interests (user_id, interest_id) VALUES (?, ?)',
+          'INSERT IGNORE INTO user_interests (user_id, interest_id) VALUES ($1, $2)',
           [id, interestId]
         );
       }

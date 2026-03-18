@@ -1,4 +1,4 @@
-const pool = require('../services/db');
+const pool = require('../services/pg_db');
 const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
 const axios = require('axios'); // We use this to download the image
 require('dotenv').config();
@@ -17,7 +17,7 @@ async function migrate() {
     console.log('🔗 Connecting to MySQL to find Firebase images...');
 
     // 1. Find all photos that still have a "firebase" link
-    const [photos] = await pool.query('SELECT id, photo_url FROM user_photos WHERE photo_url LIKE "%firebase%"');
+    const { rows: photos } = await pool.query('SELECT id, photo_url FROM user_photos WHERE photo_url LIKE "%firebase%"');
 
     console.log(`📸 Found ${photos.length} images to migrate.`);
 
@@ -43,7 +43,7 @@ async function migrate() {
 
       // 5. UPDATE MYSQL: Your turn!
       // ??? WHAT IS THE UPDATE QUERY TO SWAP THE OLD URL WITH THE NEW ONE ???
-      await pool.query('UPDATE user_photos SET photo_url = ? WHERE id = ?', [newUrl, photo.id]);
+      await pool.query('UPDATE user_photos SET photo_url = $1 WHERE id = $2', [newUrl, photo.id]);
 
       console.log(`✅ Success for ${photo.id}`);
     }

@@ -1,4 +1,4 @@
-const pool = require('../services/db');
+const pool = require('../services/pg_db');
 const crypto = require('crypto');
 
 /**
@@ -11,15 +11,15 @@ exports.pickUser = async (req, res, next) => {
 
     // 1. Save the pick with the specific type
     await pool.query(
-      'INSERT INTO picks (follower_id, following_id, type) VALUES (?, ?, ?)',
+      'INSERT INTO picks (follower_id, following_id, type) VALUES ($1, $2, $3)',
       [followerId, followingId, type || 'like']
     );
 
     // 2. CHECK FOR MATCH (Only if it's a "Like")
     if (type === 'like' || !type) {
       // Find if there is a 'like' from the other person back to me
-      const [matches] = await pool.query(
-        'SELECT id FROM picks WHERE follower_id = ? AND following_id = ? AND type = "like"  ',
+      const { rows: matches } = await pool.query(
+        'SELECT id FROM picks WHERE follower_id = $1 AND following_id = $2 AND type = "like"  ',
         [followingId, followerId]
       );
 
@@ -27,7 +27,7 @@ exports.pickUser = async (req, res, next) => {
         // It's a match! Create a chat room
         const roomId = crypto.randomUUID();
         await pool.query(
-          'INSERT INTO chat_rooms (id,user1_id, user2_id, last_message) VALUES (?, ?, ?, ?)',
+          'INSERT INTO chat_rooms (id,user1_id, user2_id, last_message) VALUES ($1, $2, $3, $4)',
           [roomId, followerId, followingId, 'You matched!']
         );
 
@@ -47,11 +47,11 @@ exports.pickUser = async (req, res, next) => {
 exports.getMyPicks = async (req, res, next) => {
   try {
     // [SQL]: Join picks with users to see who I liked
-    const [picks] = await pool.query(
+    const { rows: picks } = await pool.query(
       `SELECT u.name, u.email, p.created_at 
        FROM picks p 
        JOIN users u ON p.following_id = u.id 
-       WHERE p.follower_id = ?`,
+       WHERE p.follower_id = $1`,
       [req.user.id]
     );
     res.json(picks);
@@ -62,7 +62,7 @@ exports.getMyPicks = async (req, res, next) => {
 exports.getMatches = async (req, res, next) => {
   try {
     // [SQL]: Join picks with users to see who I liked
-    const [picks] = await pool.query(
+    const { rows: picks } = await pool.query(
       `SELECT
     u.name,
     cr.id as chat_room_id,
@@ -81,7 +81,7 @@ JOIN chat_rooms cr ON
    (cr.user1_id = p1.following_id AND cr.user2_id = p1.follower_id)
 -- Join to Photos to get their profile picture
 LEFT JOIN user_photos up ON u.id = up.user_id AND up.is_profile_pic = 1
-WHERE p1.follower_id = ? -- Only for ME
+WHERE p1.follower_id = $1 -- Only for ME
   AND p1.type = 'like'
   AND p2.type = 'like';
 
@@ -99,11 +99,11 @@ WHERE p1.follower_id = ? -- Only for ME
  */
 exports.getWhoPickedMe = async (req, res, next) => {
   try {
-    const [picks] = await pool.query(
+    const { rows: picks } = await pool.query(
       `SELECT u.name, u.email, p.created_at 
        FROM picks p 
        JOIN users u ON p.follower_id = u.id 
-       WHERE p.following_id = ?`,
+       WHERE p.following_id = $1`,
       [req.user.id]
     );
     res.json(picks);

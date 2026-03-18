@@ -1,4 +1,4 @@
-const pool = require('../services/db');
+const pool = require('../services/pg_db');
 
 /**
  * GET ALL QUESTIONS
@@ -7,7 +7,7 @@ const pool = require('../services/db');
 exports.getQuestions = async (req, res, next) => {
   try {
     // ??? WHAT IS THE SQL TO GET ALL QUESTIONS ???
-    const [questions] = await pool.query('SELECT * FROM profile_questions'); 
+    const { rows: questions } = await pool.query('SELECT * FROM profile_questions'); 
     res.json(questions);
   } catch (error) {
     next(error);
@@ -28,10 +28,10 @@ exports.getMyAnswers = async (req, res, next) => {
         SELECT ua.answer_text, pq.question_text 
         FROM user_answers ua
         JOIN profile_questions pq ON ua.question_id = pq.id
-        WHERE ua.user_id = ?
+        WHERE ua.user_id = $1
     `;
 
-    const [answers] = await pool.query(sql, [userId]);
+    const { rows: answers } = await pool.query(sql, [userId]);
     res.json(answers);
   } catch (error) {
     next(error);
@@ -49,8 +49,8 @@ exports.saveAnswer = async (req, res, next) => {
 
     const sql = `
       INSERT INTO user_answers (user_id, question_id, answer_text)
-      VALUES (?, ?, ?)
-      ON DUPLICATE KEY UPDATE answer_text = ?
+      VALUES ($1, $2, $3)
+      ON CONFLICT (user_id, question_id) DO UPDATE SET answer_text = $4
     `;
 
     // We pass answer_text twice: once for the potential INSERT, once for the UPDATE.

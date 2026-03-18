@@ -1,4 +1,4 @@
-const pool = require('../services/db');
+const pool = require('../services/pg_db');
 
 async function practice() {
   try {
@@ -6,7 +6,7 @@ async function practice() {
 
     // 1. SIMPLE INNER JOIN (Matching Users and Interests)
     console.log('1. INNER JOIN: Users and their Interest names');
-    const [rows1] = await pool.query(`
+    const { rows: rows1 } = await pool.query(`
       SELECT u.name as user_name, i.name as interest_name 
       FROM users u 
       INNER JOIN user_interests ui ON u.id = ui.user_id 
@@ -18,7 +18,7 @@ async function practice() {
 
     // 2. AGGREGATE JOIN (Counting)
     console.log('2. JOIN + GROUP BY: Counting Interests per User');
-    const [rows2] = await pool.query(`
+    const { rows: rows2 } = await pool.query(`
       SELECT u.name, COUNT(ui.interest_id) as total_interests 
       FROM users u 
       LEFT JOIN user_interests ui ON u.id = ui.user_id 
@@ -30,7 +30,7 @@ async function practice() {
 
     // 3. THE "LINKEDIN" STYLE JOIN (Picks/Likes)
     console.log('3. SELF-JOIN ANALOGY: Who liked whom?');
-    const [rows3] = await pool.query(`
+    const { rows: rows3 } = await pool.query(`
       SELECT 
         u1.name as "Who Liked", 
         u2.name as "Who was Liked"
